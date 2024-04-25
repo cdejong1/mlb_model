@@ -1,0 +1,110 @@
+---
+title: "Final Project"
+author: "Collin"
+date: "2024-04-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+
+
+```{r}
+Pitching = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/PitchingStats.csv")
+Offense = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/OffensiveStats.csv")
+Fielding = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/FieldingStats.csv")
+Pitching = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/PitchingStats.csv")
+Schedule = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/Schedule%20Data.csv")
+Schedule[2430,7] = "1 - 0"
+Schedule = Schedule %>%
+separate(Result, into = c("Home Score", "Away Score"), sep = " - ") %>%
+mutate("Home Score" = as.integer(`Home Score`),
+"Away Score" = as.integer(`Away Score`),
+"ScoreDiff" = as.integer(`Home Score` - `Away Score`),
+"TotalPoints" = as.integer(`Home Score` + `Away Score`),
+"Winner" = if_else(ScoreDiff > 0, "Home", "Away"))
+Schedule
+Combined_MLB = Schedule %>% left_join(Offense, by = c("Home Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Off"), .cols = setdiff(names(Offense), "Tm"))%>%
+left_join(Pitching, by = c("Home Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Pitch"), .cols = setdiff(names(Pitching), "Tm"))%>%
+left_join(Fielding, by = c("Home Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Field"), .cols = setdiff(names(Fielding), "Tm"))%>%
+left_join(Offense, by = c("Away Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Off"), .cols = setdiff(names(Offense), "Tm"))%>%
+left_join(Pitching, by = c("Away Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Pitch"), .cols = setdiff(names(Pitching), "Tm"))%>%
+left_join(Fielding, by = c("Away Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Field"), .cols = setdiff(names(Fielding), "Tm"))
+Combined_MLB
+
+```
+
+
+
+
+```{r}
+Batting_Data = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/mlb_team_batting_stats_2023.csv")
+Pitching_Data = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/mlb_team_pitching_stats_2023.csv")
+MLB_Data = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/Schedule%20Data.csv")
+MLB_Data[2430,7] = "1 - 0"
+# Manually specify teams with two-word city names
+two_word_cities <- c("Los Angeles", "New York", "San Francisco", "San Diego", "St. Louis", "Kansas City", "Tampa Bay")
+# Custom function to split city and team based on known two-word cities
+split_team <- function(team_name) {
+for (city in two_word_cities) {
+if (startsWith(team_name, city)) {
+team <- sub(paste("^", city, " ", sep=""), "", team_name)
+return(c(city, team))
+}
+}
+# Default split for one-word city names
+parts <- strsplit(team_name, " ", fixed = TRUE)[[1]]
+city <- parts[1]
+team <- paste(parts[-1], collapse = " ")
+return(c(city, team))
+}
+# Apply the function
+MLB_Data <- MLB_Data %>%
+rowwise() %>%
+mutate("Home Key" = split_team(`Home Team`)[2],
+"Away Key"= split_team(`Away Team`)[2]) %>%
+ungroup()
+MLB_Data = MLB_Data %>%
+separate(Result, into = c("Home Score", "Away Score"), sep = " - ") %>%
+mutate("Home Score" = as.integer(`Home Score`),
+"Away Score" = as.integer(`Away Score`),
+"ScoreDiff" = as.integer(`Home Score` - `Away Score`),
+"TotalPoints" = as.integer(`Home Score` + `Away Score`),
+"Winner" = if_else(ScoreDiff > 0, "Home", "Away"))
+Combined_MLB2 <- MLB_Data %>%
+left_join(Batting_Data, by = c("Home Key" = "team"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home"), .cols = setdiff(names(Batting_Data), "team")) %>%
+left_join(Pitching_Data, by = c("Home Key" = "team"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.opp"), .cols = setdiff(names(Pitching_Data), "team")) %>%
+left_join(Batting_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
+rename_with(.fn = ~paste0(., ".Away"), .cols = setdiff(names(Batting_Data), "team")) %>%
+left_join(Pitching_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
+rename_with(.fn = ~paste0(., ".Away.opp"), .cols = setdiff(names(Pitching_Data), "team"))
+Combined_MLB2 = Combined_MLB2%>%
+select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
+Combined_MLB2
+
+
+
+```
+
+
+
+```{r}
+geom_point()
+ggplot(Combined_MLB, aes(x = H.Home.Off, y = H.Away.Off, color = Winner)) +
+geom_point()
+ggplot(Combined_MLB, aes(x = ERA.Home.Pitch, y = ERA.Away.Pitch, color = Winner)) +
+geom_point()
+ggplot(Combined_MLB, aes(x = R.G.Home.Off, y = R.G.Away.Off, color = Winner)) + geom_point()
+```
+
