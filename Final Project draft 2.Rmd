@@ -9,7 +9,14 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(caret)
-library(broom)
+library(pROC)
+library(dplyr)
+
+#algorithm specific libraries
+library(MASS)
+library(randomForest)
+library(gbm)
+library(e1071)
 ```
 
 
@@ -145,7 +152,7 @@ rename_with(.fn = ~paste0(., ".Away"), .cols = setdiff(names(Batting_Data), "tea
 left_join(Pitching_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
 rename_with(.fn = ~paste0(., ".Away.opp"), .cols = setdiff(names(Pitching_Data), "team"))
 Combined_MLB = Combined_MLB%>%
-select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
+dplyr::select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
 
 
 #This is a little complicated way to subtract the values and probably more hardcoding than it needs to be, but it works and it gets the difference betwee all of the variables
@@ -261,7 +268,7 @@ rename_with(.fn = ~paste0(., ".Away"), .cols = setdiff(names(Batting_Data), "tea
 left_join(Pitching_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
 rename_with(.fn = ~paste0(., ".Away.opp"), .cols = setdiff(names(Pitching_Data), "team"))
 Test_MLB_Empty = Test_MLB_Empty%>%
-select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
+dplyr::select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
 
 
 Test_MLB_Filled = Test_MLB_Filled %>% left_join(Offense, by = c("Home.Team" = "Tm"), suffix = c(".Home", "")) %>%
@@ -285,7 +292,7 @@ rename_with(.fn = ~paste0(., ".Away"), .cols = setdiff(names(Batting_Data), "tea
 left_join(Pitching_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
 rename_with(.fn = ~paste0(., ".Away.opp"), .cols = setdiff(names(Pitching_Data), "team"))
 Test_MLB_Filled = Test_MLB_Filled %>%
-select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
+dplyr::select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
 
 #This is a little complicated way to subtract the values and probably more hardcoding than it needs to be, but it works and it gets the difference betwee all of the variables
 
@@ -339,6 +346,8 @@ geom_jitter()
 #Model Creation / Assesment
 
 
+
+
 This code was used to get all of the variables, we will probably want to narrow it down to specific variables for when we do the actual model. We need at least 5 but can do more
 
 ```{r}
@@ -349,18 +358,20 @@ variable_string <- paste(diff_names, collapse = " + ")
 
 # Print the resulting string
 print(variable_string)
+
+
 ```
 
 I did some sample models to check for which variables are significant. We can decide which ones we want to work with from these.
 
 ```{r}
-Batstats = glm(Winner ~ attempts.Diff + avg_hit_angle.Diff + anglesweetspotpercent.Diff + max_hit_speed.Diff + avg_hit_speed.Diff + ev50.Diff + fbld.Diff + gb.Diff + max_distance.Diff + avg_distance.Diff + avg_hr_distance.Diff + ev95plus.Diff + ev95percent.Diff + attempts.Diff.opp + avg_hit_angle.Diff.opp + anglesweetspotpercent.Diff.opp + max_hit_speed.Diff.opp + avg_hit_speed.Diff.opp + ev50.Diff.opp + fbld.Diff.opp + gb.Diff.opp + max_distance.Diff.opp + avg_distance.Diff.opp + avg_hr_distance.Diff.opp + ev95plus.Diff.opp + ev95percent.Diff.opp + barrels.Diff.opp + brl_percent.Diff.opp + brl_pa.Diff.opp, data = Combined_MLB, family = binomial)
+Batstats = glm(Winner ~ attempts.Diff + avg_hit_angle.Diff + anglesweetspotpercent.Diff + max_hit_speed.Diff + avg_hit_speed.Diff + ev50.Diff + fbld.Diff + gb.Diff + max_distance.Diff + avg_distance.Diff + avg_hr_distance.Diff + ev95plus.Diff + ev95percent.Diff + barrels.Diff + brl_percent.Diff + brl_pa.Diff + attempts.Diff.opp + avg_hit_angle.Diff.opp + anglesweetspotpercent.Diff.opp + max_hit_speed.Diff.opp + avg_hit_speed.Diff.opp + ev50.Diff.opp + fbld.Diff.opp + gb.Diff.opp + max_distance.Diff.opp + avg_distance.Diff.opp + avg_hr_distance.Diff.opp + ev95plus.Diff.opp + ev95percent.Diff.opp + barrels.Diff.opp + brl_percent.Diff.opp + brl_pa.Diff.opp, data = Combined_MLB, family = binomial)
 
-Offense = glm(Winner ~ X.Bat.Diff.Off + BatAge.Diff.Off + R.G.Diff.Off + PA.Diff.Off + AB.Diff.Off + R.Diff.Off + H.Diff.Off + X2B.Diff.Off + X3B.Diff.Off + HR.Diff.Off + RBI.Diff.Off + SB.Diff.Off + CS.Diff.Off + BB.Diff.Off + SO.Diff.Off + BA.Diff.Off + OBP.Diff.Off + SLG.Diff.Off + OPS.Diff.Off + OPS..Diff.Off + GDP.Diff.Off + HBP.Diff.Off + SH.Diff.Off + SF.Diff.Off + IBB.Diff.Off + LOB.Diff.Off , data = Combined_MLB, family = binomial)
+Offense = glm(Winner ~ X.Bat.Diff.Off + BatAge.Diff.Off + R.G.Diff.Off + G.Diff.Off + PA.Diff.Off + AB.Diff.Off + R.Diff.Off + H.Diff.Off + X2B.Diff.Off + X3B.Diff.Off + HR.Diff.Off + RBI.Diff.Off + SB.Diff.Off + CS.Diff.Off + BB.Diff.Off + SO.Diff.Off + BA.Diff.Off + OBP.Diff.Off + SLG.Diff.Off + OPS.Diff.Off + OPS..Diff.Off + TB.Diff.Off + GDP.Diff.Off + HBP.Diff.Off + SH.Diff.Off + SF.Diff.Off + IBB.Diff.Off + LOB.Diff.Off , data = Combined_MLB, family = binomial)
 
-Pitching = glm(Winner ~ X.P.Diff.Pitch + PAge.Diff.Pitch + RA.G.Diff.Pitch + W.Diff.Pitch + W.L..Diff.Pitch + ERA.Diff.Pitch + GF.Diff.Pitch + tSho.Diff.Pitch + cSho.Diff.Pitch + SV.Diff.Pitch + IP.Diff.Pitch + H.Diff.Pitch + R.Diff.Pitch + ER.Diff.Pitch + HR.Diff.Pitch + BB.Diff.Pitch + IBB.Diff.Pitch + SO.Diff.Pitch + HBP.Diff.Pitch + BK.Diff.Pitch + WP.Diff.Pitch + BF.Diff.Pitch + ERA..Diff.Pitch + FIP.Diff.Pitch + WHIP.Diff.Pitch + H9.Diff.Pitch + HR9.Diff.Pitch + BB9.Diff.Pitch + SO9.Diff.Pitch , data = Combined_MLB, family = binomial)
+Pitching = glm(Winner ~ X.P.Diff.Pitch + PAge.Diff.Pitch + RA.G.Diff.Pitch + W.Diff.Pitch + L.Diff.Pitch + W.L..Diff.Pitch + ERA.Diff.Pitch + G.Diff.Pitch + GS.Diff.Pitch + GF.Diff.Pitch + CG.Diff.Pitch + tSho.Diff.Pitch + cSho.Diff.Pitch + SV.Diff.Pitch + IP.Diff.Pitch + H.Diff.Pitch + R.Diff.Pitch + ER.Diff.Pitch + HR.Diff.Pitch + BB.Diff.Pitch + IBB.Diff.Pitch + SO.Diff.Pitch + HBP.Diff.Pitch + BK.Diff.Pitch + WP.Diff.Pitch + BF.Diff.Pitch + ERA..Diff.Pitch + FIP.Diff.Pitch + WHIP.Diff.Pitch + H9.Diff.Pitch + HR9.Diff.Pitch + BB9.Diff.Pitch + SO9.Diff.Pitch + SO.W.Diff.Pitch + LOB.Diff.Pitch , data = Combined_MLB, family = binomial)
 
-Fielding = glm(Winner ~ X.Fld.Diff.Field + RA.G.Diff.Field + DefEff.Diff.Field + CG.Diff.Field + Inn.Diff.Field + Ch.Diff.Field + A.Diff.Field + DP.Diff.Field + Fld..Diff.Field + Rtot.Diff.Field + Rtot.yr.Diff.Field + Rdrs.Diff.Field + Rdrs.yr.Diff.Field + Rgood.Diff.Field, data = Combined_MLB, family = binomial)
+Fielding = glm(Winner ~ X.Fld.Diff.Field + RA.G.Diff.Field + DefEff.Diff.Field + G.Diff.Field + GS.Diff.Field + CG.Diff.Field + Inn.Diff.Field + Ch.Diff.Field + PO.Diff.Field + A.Diff.Field + E.Diff.Field + DP.Diff.Field + Fld..Diff.Field + Rtot.Diff.Field + Rtot.yr.Diff.Field + Rdrs.Diff.Field + Rdrs.yr.Diff.Field + Rgood.Diff.Field, data = Combined_MLB, family = binomial)
 
 summary(Batstats)
 summary(Offense)
@@ -376,7 +387,7 @@ summary(Fielding)
 
 #Logistic Regression
 
-I made a simple logistic regression with 5 variables. We do not need to use these ones and can definitely put more in once we decie on more accurate ones. The code should work just by replacing the variables. 
+I made a simple logistic regression with 5 variables. We do not need to use these ones and can definitely put more in once we decide on more accurate ones. The code should work just by replacing the variables. 
 
 Right now it only does it on the training set and I am working on getting data for a test set. We can make the models without and then when we get the test data and just slightly modify code.
 
@@ -424,51 +435,120 @@ Matrix = confusionMatrix(predicted_classes ,actual_classes, positive = "Home")
 Matrix
 ```
 
-.58 acc
 
-.5811
+
+#Need 2 more types of models
+
+We can use any of the class models to try and come up with 2 more models. Once we decide on variables we just need to input them into the model code and the rest should work.
+
+# LDA and QDA Models for Classification
+```{r}
+#Create Differences Matrix
+diff_matrix <- Combined_MLB |>
+  dplyr::select(, c(diff_names)) |>
+  mutate(Winner = Combined_MLB$Winner)
+nzv <- nearZeroVar(diff_matrix, saveMetrics = TRUE)
+
+diff_matrix_cleaned <- diff_matrix[, !nzv$nzv]
+
+#Models
+lda.mod <- lda(Winner ~ . - ScoreDiff, data = diff_matrix_cleaned)
+#lda.mod
+
+preProc <- preProcess(diff_matrix_cleaned, method = "pca", thresh = 0.95)
+diff_matrix_pca <- predict(preProc, diff_matrix_cleaned)
+#diff_matrix_pca
+
+qda.mod <- qda(Winner ~ ., data = diff_matrix_pca)
+#qda.mod
+
+#Predictions
+# LDA
+yhat_lda <- predict(lda.mod, newdata = diff_matrix_cleaned)
+roc(predictor = yhat_lda$posterior[,1], response = diff_matrix_cleaned$Winner, plot = TRUE)
+cm_lda <- confusionMatrix(yhat_lda$class, diff_matrix_cleaned$Winner, positive = "Home")
+
+# QDA
+yhat_qda <- predict(qda.mod, newdata = diff_matrix_pca)
+roc(predictor = yhat_qda$posterior[,1], response = diff_matrix_pca$Winner, plot = TRUE)
+cm_qda <- confusionMatrix(yhat_qda$class, diff_matrix_pca$Winner, positive = "Home")
+
+
+cm_lda 
+cm_qda
+
+
+```
+
+
 
 
 ```{r}
-Model = glm(Winner ~  PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field, data = Combined_MLB, family = binomial)
-summary(Model)
-
-phat <- predict(Model, newdata = Test_MLB_Filled, type = "response")
-threshold = 0.58107
-
-predicted_classes  <- ifelse(phat > threshold, "Home" , "Away")
-actual_classes <- factor(Test_MLB_Filled$Winner)
-predicted_classes  <- factor(predicted_classes , levels = levels(actual_classes))
-
-Matrix = confusionMatrix(predicted_classes ,actual_classes, positive = "Home")
-Matrix
-
-thresholds <- seq(0.3, 0.7, by = 0.01)
-accuracy_results <- numeric(length(thresholds))
-
-for (i in seq_along(thresholds)) {
-  threshold <- thresholds[i]
-  phat <- predict(Model, newdata = Combined_MLB, type = "response")
-  predicted_classes <- ifelse(phat > threshold, "Home", "Away")
-  actual_classes <- factor(Combined_MLB$Winner)
-  predicted_classes <- factor(predicted_classes, levels = levels(actual_classes))
-
-  conf_matrix <- confusionMatrix(predicted_classes, actual_classes)
-  accuracy_results[i] <- conf_matrix$overall['Accuracy']}
-
-best_index <- which.max(accuracy_results)
-best_threshold <- thresholds[best_index]
-best_accuracy <- accuracy_results[best_index]
-
-cat("Best Threshold:", best_threshold, "\n")
-cat("Best Accuracy:", best_accuracy, "\n")
+# Select the most important variables
+coefficients <- lda.mod$scaling
+importance <- apply(abs(coefficients), 1, sum)
+sorted_importance <- sort(importance, decreasing = TRUE)
+top_variables <- names(sorted_importance)[1:7]
+top_variables
 
 
+# LDA and QDA with cross-validation
+control <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
 
-plot(thresholds, accuracy_results, type = "l", col = "blue", xlab = "Threshold", ylab = "Accuracy",
-     main = "Threshold vs. Accuracy")
-abline(v = best_threshold, col = "red", lty = 2)
+lda_fit <- train(Winner ~ Fld..Diff.Field + BA.Diff.Off + OBP.Diff.Off + DefEff.Diff.Field + W.L..Diff.Pitch + SLG.Diff.Off + OPS.Diff.Off, data = diff_matrix_cleaned, method = "lda", trControl = control, metric = "ROC")
+
+qda_fit <- train(Winner ~ ., data = diff_matrix_pca, method = "qda", trControl = control, metric = "ROC")
+
+lda_fit
+qda_fit
+
 ```
+
+
+# Random Forest for classification
+```{r}
+mod.forest.class <- randomForest(Winner ~ . - ScoreDiff, data = diff_matrix_cleaned, importance = TRUE)
+
+mod.forest.class
+
+
+
+yhat_forest <- predict(mod.forest.class, newdata = diff_matrix_cleaned)
+cm_forest <- confusionMatrix(yhat_forest, diff_matrix_cleaned$Winner, positive = "Home")
+
+cm_forest
+
+varImpPlot(mod.forest.class)
+variable_importance <- importance(mod.forest.class)
+```
+
+
+
+```{r}
+top_variables <- head(sort(variable_importance[, "MeanDecreaseAccuracy"], decreasing = TRUE), 7)
+names(top_variables)
+
+# Boosted Model
+diff_matrix_cleaned01 <- diff_matrix_cleaned %>% mutate(Winner = if_else(Winner == "Home",1,0))
+
+mod.boost.class <-gbm(Winner~ W.L..Diff.Pitch + L.Diff.Pitch + W.Diff.Pitch + IP.Diff.Pitch + SO.W.Diff.Pitch + Inn.Diff.Field + FIP.Diff.Pitch, 
+                      data=diff_matrix_cleaned01, 
+                      distribution = "bernoulli",
+                      n.trees=5000, 
+                      interaction.depth=5, 
+                      shrinkage= 0.2,
+                      cv.folds = 10)
+
+summary(mod.boost.class)
+best.iter <- gbm.perf(mod.boost.class, plot.it = TRUE)
+
+phat.boost.class <- predict(mod.boost.class, newdata = diff_matrix_cleaned01, n.trees = best.iter, type = "response")
+yhat.boost.class <- factor(if_else(phat.boost.class > 0.5,"Home","Away"),levels = c("Home","Away"))
+roc(predictor = phat.boost.class, response = diff_matrix_cleaned01$Winner, plot = TRUE)
+confusionMatrix(yhat.boost.class,diff_matrix_cleaned$Winner, positive = "Home")
+```
+
+
 
 
 
@@ -487,8 +567,8 @@ Once we have decided on the variables we want and have a test set, then we can d
 
 
 ```{r}
-Games1 = Test_MLB_Filled %>% select(-c(`Home Score`, `Away Score`, ScoreDiff, TotalPoints, Winner))
-Games2 = Test_MLB_Empty %>% select(-c(Result))
+Games1 = Test_MLB_Filled %>% dplyr::select(-c(`Home Score`, `Away Score`, ScoreDiff, TotalPoints, Winner))
+Games2 = Test_MLB_Empty %>% dplyr::select(-c(Result))
 
 
 TwinsGames = rbind(subset(Games1, Home.Team == "Minnesota Twins" | Away.Team == "Minnesota Twins"),subset(Games2, Home.Team == "Minnesota Twins" | Away.Team == "Minnesota Twins"))
@@ -561,5 +641,3 @@ team_wins <- rename(team_wins, Team = ActualWinner)
 
 arrange(team_wins, desc(TotalPredictedWins))
 ```
-
-
