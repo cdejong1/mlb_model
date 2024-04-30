@@ -9,6 +9,14 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(caret)
+library(pROC)
+library(dplyr)
+
+#algorithm specific libraries
+library(MASS)
+library(randomForest)
+library(gbm)
+library(e1071)
 ```
 
 
@@ -104,7 +112,7 @@ rename_with(.fn = ~paste0(., ".Away"), .cols = setdiff(names(Batting_Data), "tea
 left_join(Pitching_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
 rename_with(.fn = ~paste0(., ".Away.opp"), .cols = setdiff(names(Pitching_Data), "team"))
 Combined_MLB = Combined_MLB%>%
-select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
+dplyr::select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
 
 base_names_Off <- c("X.Bat", "BatAge", "R.G", "G", "PA", "AB", "R", "H", "X2B", "X3B", "HR", "RBI", "SB", "CS", "BB", "SO", "BA", "OBP", "SLG", "OPS", "OPS.", "TB", "GDP", "HBP", "SH", "SF", "IBB", "LOB")
 
@@ -157,6 +165,12 @@ variable_string <- paste(diff_names, collapse = " + ")
 
 # Print the resulting string
 print(variable_string)
+
+#Create Differences Matrix
+diff_matrix <- Combined_MLB |>
+  dplyr::select(, c(diff_names)) |>
+  mutate(Winner = Combined_MLB$Winner)
+diff_matrix
 ```
 
 I did some sample models to check for which variables are significant. We can decide which ones we want to work with from these.
@@ -184,7 +198,7 @@ summary(Fielding)
 
 #Logistic Regression
 
-I made a simple logistic regression with 5 variables. We do not need to use these ones and can definitely put more in once we decie on more accurate ones. The code should work just by replacing the variables. 
+I made a simple logistic regression with 5 variables. We do not need to use these ones and can definitely put more in once we decide on more accurate ones. The code should work just by replacing the variables. 
 
 Right now it only does it on the training set and I am working on getting data for a test set. We can make the models without and then when we get the test data and just slightly modify code.
 
@@ -237,6 +251,148 @@ Matrix
 #Need 2 more types of models
 
 We can use any of the class models to try and come up with 2 more models. Once we decide on variables we just need to input them into the model code and the rest should work.
+
+# LDA and QDA Models for Classification
+```{r}
+#Models
+lda.mod <- lda(Winner ~ PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field, data = Combined_MLB)
+lda.mod
+
+qda.mod <- qda(Winner ~ PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field, data = Combined_MLB)
+qda.mod
+
+#Predictions
+# LDA
+yhat_lda <- predict(lda.mod, newdata = Combined_MLB)
+roc(predictor = yhat_lda$posterior[,1], response = Combined_MLB$Winner, plot = TRUE)
+cm_lda <- confusionMatrix(yhat_lda$class, Combined_MLB$Winner, positive = "Home")
+
+# QDA
+yhat_qda <- predict(qda.mod, newdata = Combined_MLB)
+roc(predictor = yhat_qda$posterior[,1], response = Combined_MLB$Winner, plot = TRUE)
+cm_qda <- confusionMatrix(yhat_qda$class, Combined_MLB$Winner, positive = "Home")
+
+
+cm_lda 
+cm_qda
+```
+Area Under the Curve (AUC): For LDA, the AUC is 0.6136 and for QDA, it is 0.6172. Values closer to 1.0 indicate better model performance, with 0.5 representing a model with no discriminative power
+
+Accuracy: Both models have similar accuracy around 57%, slightly above the no information rate (52.1%), which is the proportion of the most frequent class.
+
+Sensitivity and Specificity: Sensitivity (true positive rate) and specificity (true negative rate) provide insights into how well the model predicts each class. Both models have moderate sensitivity and specificity, indicating a reasonable balance but room for improvement.
+
+Kappa: This statistic measures agreement between the predicted and actual classifications, corrected for agreement that occurs by chance. A kappa value near 0 suggests minimal agreement beyond chance, whereas higher values indicate better performance. Both models show low kappa values, suggesting modest agreement.
+
+
+
+```{r}
+#Normalize the Data
+predictors <- Combined_MLB |>
+  dplyr::select(PA.Diff.Off, avg_hr_distance.Diff, OBP.Diff.Off, fbld.Diff, DefEff.Diff.Field)
+
+preproc <- preProcess(predictors, method = "scale")
+
+scaled_predictors <- predict(preproc, Combined_MLB)
+
+norm_data <- as.data.frame(scaled_predictors)
+
+norm_data$Winner <- Combined_MLB$Winner
+
+# LDA and QDA with cross-validation
+control <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+lda_fit <- train(Winner ~ PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field, data = norm_data, method = "lda", trControl = control, metric = "ROC")
+
+qda_fit <- train(Winner ~ PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field, data = norm_data, method = "qda", trControl = control, metric = "ROC")
+
+lda_fit
+qda_fit
+
+```
+Cross-validation (CV) was implemented to provide a more robust evaluation of the model by dividing the data into 10 folds (segments). Each fold acts as a validation set once, with the remaining used as the training set. This process reduces variance in the model evaluation by using different subsets of the data for training and testing.
+
+ROC (Area Under the Curve):
+- LDA: The ROC score is approximately 0.605.
+- QDA: The ROC score is about 0.598.
+- These scores are close to the AUC values observed in the non-normalized models, suggesting that normalization didn't significantly change the discriminative ability of the models. AUC values closer to 1 indicate better model performance; here, values near 0.6 suggest moderate discrimination.
+
+# Random Forest for classification
+```{r}
+mod.forest.class <- randomForest(Winner ~ PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field, data = Combined_MLB, mtry = 5, importance = TRUE)
+varImpPlot(mod.forest.class)
+
+yhat_forest <- predict(mod.forest.class, newdata = Combined_MLB)
+cm_forest <- confusionMatrix(yhat_forest, Combined_MLB$Winner, positive = "Home")
+
+cm_forest
+```
+'mtry = 5' : This parameter specifies that each tree in the forest should consider five variables at each split. Given that you have exactly five predictors, each tree in the forest will consider all available variables for splitting at each node.
+
+Accuracy : 71.89%
+Kappa = 0.4344 : The Kappa statistic adjusts accuracy by accounting for the possibility of correct prediction by chance alone. A Kappa value of 0.4344 suggests moderate agreement between prediction and reality beyond chance.
+
+
+```{r}
+mtry_values <- c(2,3,4,5)
+ntree_values <- c(100, 500, 1000)
+maxnodes_values <- c(10, 20 ,30)
+
+#Store best model metrics 
+best_model <- NULL
+best_accuracy <- 0
+best_parameters <- list(mtry = NULL, ntree = NULL, maxnodes = NULL)
+best_confusionMatrix <- NULL
+
+for (mtry in mtry_values) {
+  for (ntree in ntree_values) {
+    for (maxnodes in maxnodes_values) {
+      mod <- randomForest(Winner ~ PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field,
+                          data = Combined_MLB,
+                          mtry = mtry,
+                          ntree = ntree, 
+                          maxnodes = maxnodes,
+                          importance = TRUE)
+      
+      predictions <- predict(mod, Combined_MLB)
+      
+      cm <- confusionMatrix(predictions, Combined_MLB$Winner, positive = "Home")
+      accuracy <- cm$overall['Accuracy']
+      
+      if (accuracy > best_accuracy) {
+        best_accuracy <- accuracy
+        best_model <- mod
+        best_parameters <- list(mtry = mtry, ntree = ntree, maxnodes = maxnodes)
+        best_confusionMatrix <- cm
+      }
+    }
+  }
+}
+
+print("Best Model Parameters: \n")
+print(best_parameters)
+print(paste("Best Accuracy: ", best_accuracy))
+print(best_confusionMatrix)
+
+```
+
+# SVM for Classification
+```{r}
+mod.svm <- tune.svm(Winner ~ PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field,
+                    data = Combined_MLB,
+                    scale = TRUE,
+                    cost = 2^seq(-5,5,2))
+mod.svm$best.model
+
+yhat.svm <- predict(mod.svm$best.model, newdata = Combined_MLB)
+confusionMatrix(yhat.svm, Combined_MLB$Winner, positive = "Home")
+
+```
+
+
+
+
+
 
 
 #We will need to do some assessing on all of the models
