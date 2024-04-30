@@ -1,0 +1,664 @@
+---
+title: "Testing nv"
+author: "Collin"
+date: "2024-04-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(pROC)
+library(dplyr)
+
+#algorithm specific libraries
+library(MASS)
+library(randomForest)
+library(gbm)
+library(e1071)
+```
+
+
+
+#Data
+
+Our data was retrieved from the following sources. They were all uploaded to github to be used in the File.
+
+Data for the MLB season schedule: 
+
+FixtureDownload. "MLB 2023 fixture and results." Accessed April 30, 2024. https://fixturedownload.com/results/mlb-2023.
+
+
+For Offense, Pitching, and Fielding Stats:
+
+BaseballReference. "2023 Major League Baseball Team Statistics." Accessed April 30, 2024. https://www.baseball-reference.com/leagues/majors/2023.shtml
+
+For the more specific Batting and Pitching data: 
+
+mlb. "Baseball savant custom leader board." Accessed April 30, 2024. https://baseballsavant.mlb.com/
+
+*Data overview*
+
+With a few different sources and a lot of possible variables, it is important that we go explain what the variables are and how we named them in the dataset.
+
+All data is combined in the Combined_MLB dataset
+
+- Match Number, Round Number, and Date are all variables that came with the schedule. They do not serve too much of a purpose other than classifying when a game is happening in the season
+
+- Location: Where the game was played
+
+- Home team and Away Team: Who played in the game
+
+- Home Score and Away Score: What each team scored in the game
+
+- Score Diff and Total Points: The difference of points and total points
+
+- Winner: Who won the game
+
+The next set of variables are labeled as .Home or .Away depending on which team the stats are referring to. All of them are repeated for both Home and Away teams
+
+Then we have variables labeled as .Off. These variables refer to offensive stats that we got from Baseball Reference. It includes such stats as Hits, runs batted in, singles, doubles, triples, walks, etc. They will receive both the team and data tag for example: RBI.Home.Off refers RBI's by the home team. 
+
+We then have variables labeled as .Pitch. These refer to the pitching stats that we got from sports reference. They mirror the offensive stats in a lot of ways but do have some pitcher specific stats such as Earned runs allowed and innings pitched. 
+
+The data labeled as .Field refer to the final data set from sports reference. This is data on the fielding stats of the team it is referring too. 
+
+With the three data sets above we am not going into specific detail onto what each variable means as that would be too much to include. Sports reference does a great job explaining them all if you are interested but instead we will choose to only go more in depth on the variables that we choose for our model.
+
+
+For the data from *Insert Website* we have them labeled with just the team classification and the pitching data is labeled as .opp to signify that it is what they are allowing the opposing team to do. These variables are the average angle a ball is hit, the average distance, and many more relating to how a ball is hit. 
+
+Finally, we have variables labeled as .Diff for each of the variables above. These are taking the difference of the Home and Away for each variable to see how the two teams compare to one another. These will be what we use in the models.
+
+
+
+```{r}
+set.seed(338)
+#Read in the data from GitHub
+
+Pitching = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/PitchingStats.csv")
+Offense = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/OffensiveStats.csv")
+Fielding = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/FieldingStats.csv")
+Batting_Data = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/mlb_team_batting_stats_2023.csv")
+Pitching_Data = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/mlb_team_pitching_stats_2023.csv")
+
+#Fix one weird naming Convention with the Diamondbacks
+
+Batting_Data = Batting_Data %>% mutate(team = ifelse(grepl("D-backs", team, ignore.case = TRUE), "Diamondbacks", team))
+Pitching_Data = Pitching_Data %>% mutate(team = ifelse(grepl("D-backs", team, ignore.case = TRUE), "Diamondbacks", team))
+
+
+#Read in the schedule for the season
+
+Schedule = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/Schedule%20Data.csv")
+Schedule[2430,7] = "1 - 0" #One game was declared no contest and was later added back in as a 1-0 win.
+
+#Splitting up the score from the "x - y" format that it comes in and declaring a Winner
+Schedule = Schedule %>%
+separate(Result, into = c("Home Score", "Away Score"), sep = " - ") %>%
+mutate("Home Score" = as.integer(`Home Score`),
+"Away Score" = as.integer(`Away Score`),
+"ScoreDiff" = as.integer(`Home Score` - `Away Score`),
+"TotalPoints" = as.integer(`Home Score` + `Away Score`),
+"Winner" = if_else(ScoreDiff > 0, "Home", "Away"),
+"Winner" = as.factor(Winner))
+
+#The batting and pitching data uses a different naming convention than the other data. I am splitting up the common cities so we do not run into problems with delineating by spaces
+
+two_word_cities <- c("Los Angeles", "New York", "San Francisco", "San Diego", "St. Louis", "Kansas City", "Tampa Bay")
+
+# Custom function to split city and team based on known two-word cities
+split_team <- function(team_name) {
+for (city in two_word_cities) {
+if (startsWith(team_name, city)) {
+team <- sub(paste("^", city, " ", sep=""), "", team_name)
+return(c(city, team))
+}
+}
+# Default split for one-word city names
+parts <- strsplit(team_name, " ", fixed = TRUE)[[1]]
+city <- parts[1]
+team <- paste(parts[-1], collapse = " ")
+return(c(city, team))
+}
+
+#Create a Key for the join
+Schedule <- Schedule %>%
+rowwise() %>%
+mutate("Home Key" = split_team(`Home Team`)[2],
+"Away Key"= split_team(`Away Team`)[2]) %>%
+ungroup()
+
+#Join all of the data into one dataframe and name them according to the convention above
+Combined_MLB = Schedule %>% left_join(Offense, by = c("Home Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Off"), .cols = setdiff(names(Offense), "Tm"))%>%
+left_join(Pitching, by = c("Home Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Pitch"), .cols = setdiff(names(Pitching), "Tm"))%>%
+left_join(Fielding, by = c("Home Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Field"), .cols = setdiff(names(Fielding), "Tm"))%>%
+left_join(Offense, by = c("Away Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Off"), .cols = setdiff(names(Offense), "Tm"))%>%
+left_join(Pitching, by = c("Away Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Pitch"), .cols = setdiff(names(Pitching), "Tm"))%>%
+left_join(Fielding, by = c("Away Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Field"), .cols = setdiff(names(Fielding), "Tm"))%>%
+left_join(Batting_Data, by = c("Home Key" = "team"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home"), .cols = setdiff(names(Batting_Data), "team")) %>%
+left_join(Pitching_Data, by = c("Home Key" = "team"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.opp"), .cols = setdiff(names(Pitching_Data), "team")) %>%
+left_join(Batting_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
+rename_with(.fn = ~paste0(., ".Away"), .cols = setdiff(names(Batting_Data), "team")) %>%
+left_join(Pitching_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
+rename_with(.fn = ~paste0(., ".Away.opp"), .cols = setdiff(names(Pitching_Data), "team"))
+Combined_MLB = Combined_MLB%>%
+dplyr::select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
+
+
+#This is a little complicated way to subtract the values and probably more hardcoding than it needs to be, but it works and it gets the difference betwee all of the variables
+
+base_names_Off <- c("X.Bat", "BatAge", "R.G", "G", "PA", "AB", "R", "H", "X2B", "X3B", "HR", "RBI", "SB", "CS", "BB", "SO", "BA", "OBP", "SLG", "OPS", "OPS.", "TB", "GDP", "HBP", "SH", "SF", "IBB", "LOB")
+
+base_names_pitch <- c("X.P", "PAge", "RA.G", "W", "L", "W.L.", "ERA", "G", "GS", "GF", "CG", "tSho", "cSho", "SV", "IP", "H", "R", "ER", "HR", "BB", "IBB", "SO", "HBP", "BK", "WP", "BF", "ERA.", "FIP", "WHIP", "H9", "HR9", "BB9", "SO9", "SO.W", "LOB")
+
+base_names_Field <- c("X.Fld", "RA.G", "DefEff", "G", "GS", "CG", "Inn","Ch", "PO", "A", "E", "DP", "Fld.", "Rtot", "Rtot.yr","Rdrs", "Rdrs.yr", "Rgood"
+)
+base_names <- c("attempts", "avg_hit_angle", "anglesweetspotpercent","max_hit_speed", "avg_hit_speed", "ev50", "fbld","gb", "max_distance", "avg_distance", "avg_hr_distance","ev95plus", "ev95percent", "barrels", "brl_percent","brl_pa")
+
+
+Combined_MLB <- Combined_MLB %>%
+  mutate(across(all_of(paste0(base_names_Off, ".Home.Off")), ~ . - get(gsub("Home", "Away", cur_column())), .names = "{gsub('Home.Off', 'Diff.Off', .col)}")) %>%
+  mutate(across(all_of(paste0(base_names_pitch, ".Home.Pitch")), ~ . - get(gsub("Home.Pitch", "Away.Pitch", cur_column())), .names = "{gsub('Home.Pitch', 'Diff.Pitch', .col)}"))%>%
+  mutate(across(all_of(paste0(base_names_Field, ".Home.Field")),~ . - get(gsub("Home", "Away", cur_column())),.names = "{gsub('Home.Field', 'Diff.Field', .col)}"))%>%
+  mutate(across(all_of(paste0(base_names, ".Home")), ~ . - get(gsub("Home", "Away", cur_column())),.names = "{gsub('Home$', 'Diff', .col)}")) %>%
+  mutate(across(all_of(paste0(base_names, ".Home.opp")),~ . - get(gsub("Home.opp", "Away.opp", cur_column())),.names = "{gsub('Home.opp$', 'Diff.opp', .col)}"))
+
+
+
+Combined_MLB
+```
+
+
+
+Repeating all of the same code as before, except with data from 2024. This will be what we use as our testing data. We have games up to 4/30/3024 as already completed so we will be able to see how accurate our data is. We also have the rest of the games for the year to try and make predictions on how the rest of the year will go.
+
+
+
+```{r}
+
+Pitching = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/2024PitchingStats.csv")
+Offense = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/2024OffensiveStats.csv")
+Fielding = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/2024FieldingStats.csv")
+Batting_Data = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/mlb_team_batting_stats_2024.csv")
+Pitching_Data = read_csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/mlb_team_pitching_stats_2024.csv")
+
+Batting_Data = Batting_Data %>% mutate(team = ifelse(grepl("D-backs", team, ignore.case = TRUE), "Diamondbacks", team))
+Pitching_Data = Pitching_Data %>% mutate(team = ifelse(grepl("D-backs", team, ignore.case = TRUE), "Diamondbacks", team))
+
+
+
+Test_MLB = read.csv("https://raw.githubusercontent.com/cdejong1/mlb_model/main/data/2024Schedule.csv")
+Test_MLB$Result[Test_MLB$Result == ""] <- NA
+
+Test_MLB_Filled <- Test_MLB[!is.na(Test_MLB$Result), ]
+Test_MLB_Empty<- Test_MLB[is.na(Test_MLB$Result), ]
+
+
+
+Test_MLB_Filled = Test_MLB_Filled %>%
+separate(Result, into = c("Home Score", "Away Score"), sep = " - ") %>%
+mutate("Home Score" = as.integer(`Home Score`),
+"Away Score" = as.integer(`Away Score`),
+"ScoreDiff" = as.integer(`Home Score` - `Away Score`),
+"TotalPoints" = as.integer(`Home Score` + `Away Score`),
+"Winner" = if_else(ScoreDiff > 0, "Home", "Away"),
+"Winner" = as.factor(Winner))
+
+#The batting and pitching data uses a different naming convention than the other data. I am splitting up the common cities so we do not run into problems with delineating by spaces
+
+two_word_cities <- c("Los Angeles", "New York", "San Francisco", "San Diego", "St. Louis", "Kansas City", "Tampa Bay")
+
+# Custom function to split city and team based on known two-word cities
+split_team <- function(team_name) {
+for (city in two_word_cities) {
+if (startsWith(team_name, city)) {
+team <- sub(paste("^", city, " ", sep=""), "", team_name)
+return(c(city, team))
+}
+}
+# Default split for one-word city names
+parts <- strsplit(team_name, " ", fixed = TRUE)[[1]]
+city <- parts[1]
+team <- paste(parts[-1], collapse = " ")
+return(c(city, team))
+}
+
+#Create a Key for the join
+Test_MLB_Empty <- Test_MLB_Empty %>%
+rowwise() %>%
+mutate("Home Key" = split_team(Home.Team)[2],
+"Away Key"= split_team(Away.Team)[2]) %>%
+ungroup()
+
+Test_MLB_Filled <- Test_MLB_Filled %>%
+rowwise() %>%
+mutate("Home Key" = split_team(Home.Team)[2],
+"Away Key"= split_team(Away.Team)[2]) %>%
+ungroup()
+
+#Join all of the data into one dataframe and name them according to the convention above
+Test_MLB_Empty = Test_MLB_Empty %>% left_join(Offense, by = c("Home.Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Off"), .cols = setdiff(names(Offense), "Tm"))%>%
+left_join(Pitching, by = c("Home.Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Pitch"), .cols = setdiff(names(Pitching), "Tm"))%>%
+left_join(Fielding, by = c("Home.Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Field"), .cols = setdiff(names(Fielding), "Tm"))%>%
+left_join(Offense, by = c("Away.Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Off"), .cols = setdiff(names(Offense), "Tm"))%>%
+left_join(Pitching, by = c("Away.Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Pitch"), .cols = setdiff(names(Pitching), "Tm"))%>%
+left_join(Fielding, by = c("Away.Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Field"), .cols = setdiff(names(Fielding), "Tm"))%>%
+left_join(Batting_Data, by = c("Home Key" = "team"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home"), .cols = setdiff(names(Batting_Data), "team")) %>%
+left_join(Pitching_Data, by = c("Home Key" = "team"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.opp"), .cols = setdiff(names(Pitching_Data), "team")) %>%
+left_join(Batting_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
+rename_with(.fn = ~paste0(., ".Away"), .cols = setdiff(names(Batting_Data), "team")) %>%
+left_join(Pitching_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
+rename_with(.fn = ~paste0(., ".Away.opp"), .cols = setdiff(names(Pitching_Data), "team"))
+Test_MLB_Empty = Test_MLB_Empty%>%
+dplyr::select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
+
+
+Test_MLB_Filled = Test_MLB_Filled %>% left_join(Offense, by = c("Home.Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Off"), .cols = setdiff(names(Offense), "Tm"))%>%
+left_join(Pitching, by = c("Home.Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Pitch"), .cols = setdiff(names(Pitching), "Tm"))%>%
+left_join(Fielding, by = c("Home.Team" = "Tm"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.Field"), .cols = setdiff(names(Fielding), "Tm"))%>%
+left_join(Offense, by = c("Away.Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Off"), .cols = setdiff(names(Offense), "Tm"))%>%
+left_join(Pitching, by = c("Away.Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Pitch"), .cols = setdiff(names(Pitching), "Tm"))%>%
+left_join(Fielding, by = c("Away.Team" = "Tm"), suffix = c(".Away", "")) %>%
+rename_with(.fn = ~paste0(., ".Away.Field"), .cols = setdiff(names(Fielding), "Tm"))%>%
+left_join(Batting_Data, by = c("Home Key" = "team"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home"), .cols = setdiff(names(Batting_Data), "team")) %>%
+left_join(Pitching_Data, by = c("Home Key" = "team"), suffix = c(".Home", "")) %>%
+rename_with(.fn = ~paste0(., ".Home.opp"), .cols = setdiff(names(Pitching_Data), "team")) %>%
+left_join(Batting_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
+rename_with(.fn = ~paste0(., ".Away"), .cols = setdiff(names(Batting_Data), "team")) %>%
+left_join(Pitching_Data, by = c("Away Key" = "team"), suffix = c("", ".Away")) %>%
+rename_with(.fn = ~paste0(., ".Away.opp"), .cols = setdiff(names(Pitching_Data), "team"))
+Test_MLB_Filled = Test_MLB_Filled %>%
+dplyr::select(-c(`Home Key`, `Away Key`, team_id.Home, team_id.Away, team_id.Home.opp, team_id.Away.opp))
+
+#This is a little complicated way to subtract the values and probably more hardcoding than it needs to be, but it works and it gets the difference betwee all of the variables
+
+base_names_Off <- c("X.Bat", "BatAge", "R.G", "G", "PA", "AB", "R", "H", "X2B", "X3B", "HR", "RBI", "SB", "CS", "BB", "SO", "BA", "OBP", "SLG", "OPS", "OPS.", "TB", "GDP", "HBP", "SH", "SF", "IBB", "LOB")
+
+base_names_pitch <- c("X.P", "PAge", "RA.G", "W", "L", "W.L.", "ERA", "G", "GS", "GF", "CG", "tSho", "cSho", "SV", "IP", "H", "R", "ER", "HR", "BB", "IBB", "SO", "HBP", "BK", "WP", "BF", "ERA.", "FIP", "WHIP", "H9", "HR9", "BB9", "SO9", "SO.W", "LOB")
+
+base_names_Field <- c("X.Fld", "RA.G", "DefEff", "G", "GS", "CG", "Inn","Ch", "PO", "A", "E", "DP", "Fld.", "Rtot", "Rtot.yr","Rdrs", "Rdrs.yr", "Rgood"
+)
+base_names <- c("attempts", "avg_hit_angle", "anglesweetspotpercent","max_hit_speed", "avg_hit_speed", "ev50", "fbld","gb", "max_distance", "avg_distance", "avg_hr_distance","ev95plus", "ev95percent", "barrels", "brl_percent","brl_pa")
+
+
+Test_MLB_Empty <- Test_MLB_Empty %>%
+  mutate(across(all_of(paste0(base_names_Off, ".Home.Off")), ~ . - get(gsub("Home", "Away", cur_column())), .names = "{gsub('Home.Off', 'Diff.Off', .col)}")) %>%
+  mutate(across(all_of(paste0(base_names_pitch, ".Home.Pitch")), ~ . - get(gsub("Home.Pitch", "Away.Pitch", cur_column())), .names = "{gsub('Home.Pitch', 'Diff.Pitch', .col)}"))%>%
+  mutate(across(all_of(paste0(base_names_Field, ".Home.Field")),~ . - get(gsub("Home", "Away", cur_column())),.names = "{gsub('Home.Field', 'Diff.Field', .col)}"))%>%
+  mutate(across(all_of(paste0(base_names, ".Home")), ~ . - get(gsub("Home", "Away", cur_column())),.names = "{gsub('Home$', 'Diff', .col)}")) %>%
+  mutate(across(all_of(paste0(base_names, ".Home.opp")),~ . - get(gsub("Home.opp", "Away.opp", cur_column())),.names = "{gsub('Home.opp$', 'Diff.opp', .col)}"))
+
+Test_MLB_Filled <- Test_MLB_Filled %>%
+  mutate(across(all_of(paste0(base_names_Off, ".Home.Off")), ~ . - get(gsub("Home", "Away", cur_column())), .names = "{gsub('Home.Off', 'Diff.Off', .col)}")) %>%
+  mutate(across(all_of(paste0(base_names_pitch, ".Home.Pitch")), ~ . - get(gsub("Home.Pitch", "Away.Pitch", cur_column())), .names = "{gsub('Home.Pitch', 'Diff.Pitch', .col)}"))%>%
+  mutate(across(all_of(paste0(base_names_Field, ".Home.Field")),~ . - get(gsub("Home", "Away", cur_column())),.names = "{gsub('Home.Field', 'Diff.Field', .col)}"))%>%
+  mutate(across(all_of(paste0(base_names, ".Home")), ~ . - get(gsub("Home", "Away", cur_column())),.names = "{gsub('Home$', 'Diff', .col)}")) %>%
+  mutate(across(all_of(paste0(base_names, ".Home.opp")),~ . - get(gsub("Home.opp", "Away.opp", cur_column())),.names = "{gsub('Home.opp$', 'Diff.opp', .col)}"))
+
+
+Test_MLB_Empty
+Test_MLB_Filled
+
+```
+
+
+
+
+#Exploratory Analysis
+
+
+
+
+
+Here we will look at some plots to see the how some variables compare to each other
+
+```{r}
+geom_point()
+ggplot(Combined_MLB, aes(x = avg_hr_distance.Home, y = avg_hr_distance.Away, color = Winner)) +
+geom_jitter()
+```
+
+
+#Model Creation / Assesment
+
+
+
+
+This code was used to get all of the variables, we will probably want to narrow it down to specific variables for when we do the actual model. We need at least 5 but can do more
+
+```{r}
+diff_names <- names(Combined_MLB)[grepl("Diff", names(Combined_MLB))]
+
+# Create a single string with all variable names concatenated with ' + '
+variable_string <- paste(diff_names, collapse = " + ")
+
+# Print the resulting string
+print(variable_string)
+
+
+```
+
+I did some sample models to check for which variables are significant. We can decide which ones we want to work with from these.
+
+```{r}
+Batstats = glm(Winner ~ attempts.Diff + avg_hit_angle.Diff + anglesweetspotpercent.Diff + max_hit_speed.Diff + avg_hit_speed.Diff + ev50.Diff + fbld.Diff + gb.Diff + max_distance.Diff + avg_distance.Diff + avg_hr_distance.Diff + ev95plus.Diff + ev95percent.Diff + barrels.Diff + brl_percent.Diff + brl_pa.Diff + attempts.Diff.opp + avg_hit_angle.Diff.opp + anglesweetspotpercent.Diff.opp + max_hit_speed.Diff.opp + avg_hit_speed.Diff.opp + ev50.Diff.opp + fbld.Diff.opp + gb.Diff.opp + max_distance.Diff.opp + avg_distance.Diff.opp + avg_hr_distance.Diff.opp + ev95plus.Diff.opp + ev95percent.Diff.opp + barrels.Diff.opp + brl_percent.Diff.opp + brl_pa.Diff.opp, data = Combined_MLB, family = binomial)
+
+Offense = glm(Winner ~ X.Bat.Diff.Off + BatAge.Diff.Off + R.G.Diff.Off + G.Diff.Off + PA.Diff.Off + AB.Diff.Off + R.Diff.Off + H.Diff.Off + X2B.Diff.Off + X3B.Diff.Off + HR.Diff.Off + RBI.Diff.Off + SB.Diff.Off + CS.Diff.Off + BB.Diff.Off + SO.Diff.Off + BA.Diff.Off + OBP.Diff.Off + SLG.Diff.Off + OPS.Diff.Off + OPS..Diff.Off + TB.Diff.Off + GDP.Diff.Off + HBP.Diff.Off + SH.Diff.Off + SF.Diff.Off + IBB.Diff.Off + LOB.Diff.Off , data = Combined_MLB, family = binomial)
+
+Pitching = glm(Winner ~ X.P.Diff.Pitch + PAge.Diff.Pitch + RA.G.Diff.Pitch + W.Diff.Pitch + L.Diff.Pitch + W.L..Diff.Pitch + ERA.Diff.Pitch + G.Diff.Pitch + GS.Diff.Pitch + GF.Diff.Pitch + CG.Diff.Pitch + tSho.Diff.Pitch + cSho.Diff.Pitch + SV.Diff.Pitch + IP.Diff.Pitch + H.Diff.Pitch + R.Diff.Pitch + ER.Diff.Pitch + HR.Diff.Pitch + BB.Diff.Pitch + IBB.Diff.Pitch + SO.Diff.Pitch + HBP.Diff.Pitch + BK.Diff.Pitch + WP.Diff.Pitch + BF.Diff.Pitch + ERA..Diff.Pitch + FIP.Diff.Pitch + WHIP.Diff.Pitch + H9.Diff.Pitch + HR9.Diff.Pitch + BB9.Diff.Pitch + SO9.Diff.Pitch + SO.W.Diff.Pitch + LOB.Diff.Pitch , data = Combined_MLB, family = binomial)
+
+Fielding = glm(Winner ~ X.Fld.Diff.Field + RA.G.Diff.Field + DefEff.Diff.Field + G.Diff.Field + GS.Diff.Field + CG.Diff.Field + Inn.Diff.Field + Ch.Diff.Field + PO.Diff.Field + A.Diff.Field + E.Diff.Field + DP.Diff.Field + Fld..Diff.Field + Rtot.Diff.Field + Rtot.yr.Diff.Field + Rdrs.Diff.Field + Rdrs.yr.Diff.Field + Rgood.Diff.Field, data = Combined_MLB, family = binomial)
+
+summary(Batstats)
+summary(Offense)
+summary(Pitching)
+summary(Fielding)
+```
+
+
+
+
+
+
+
+#Logistic Regression
+
+I made a simple logistic regression with 5 variables. We do not need to use these ones and can definitely put more in once we decide on more accurate ones. The code should work just by replacing the variables. 
+
+Right now it only does it on the training set and I am working on getting data for a test set. We can make the models without and then when we get the test data and just slightly modify code.
+
+
+```{r}
+Model = glm(Winner ~  PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field, data = Combined_MLB, family = binomial)
+summary(Model)
+
+
+thresholds <- seq(0.3, 0.7, by = 0.01)
+accuracy_results <- numeric(length(thresholds))
+
+for (i in seq_along(thresholds)) {
+  threshold <- thresholds[i]
+  phat <- predict(Model, newdata = Combined_MLB, type = "response")
+  predicted_classes <- ifelse(phat > threshold, "Home", "Away")
+  actual_classes <- factor(Combined_MLB$Winner)
+  predicted_classes <- factor(predicted_classes, levels = levels(actual_classes))
+
+  conf_matrix <- confusionMatrix(predicted_classes, actual_classes)
+  accuracy_results[i] <- conf_matrix$overall['Accuracy']}
+
+best_index <- which.max(accuracy_results)
+best_threshold <- thresholds[best_index]
+best_accuracy <- accuracy_results[best_index]
+
+cat("Best Threshold:", best_threshold, "\n")
+cat("Best Accuracy:", best_accuracy, "\n")
+
+
+
+plot(thresholds, accuracy_results, type = "l", col = "blue", xlab = "Threshold", ylab = "Accuracy",
+     main = "Threshold vs. Accuracy")
+abline(v = best_threshold, col = "red", lty = 2)
+
+
+phat <- predict(Model, newdata = Combined_MLB, type = "response")
+threshold = 0.56
+
+predicted_classes  <- ifelse(phat > threshold, "Home" , "Away")
+actual_classes <- factor(Combined_MLB$Winner)
+predicted_classes  <- factor(predicted_classes , levels = levels(actual_classes))
+
+Matrix = confusionMatrix(predicted_classes ,actual_classes, positive = "Home")
+Matrix
+```
+
+
+
+#Need 2 more types of models
+
+We can use any of the class models to try and come up with 2 more models. Once we decide on variables we just need to input them into the model code and the rest should work.
+
+# LDA and QDA Models for Classification
+```{r}
+#Create Differences Matrix
+diff_matrix_train <- Combined_MLB |>
+  dplyr::select(, c(diff_names)) |>
+  mutate(Winner = Combined_MLB$Winner)
+nzv <- nearZeroVar(diff_matrix_train, saveMetrics = TRUE)
+
+diff_matrix_test <- Test_MLB_Filled |>
+  dplyr::select(, c(diff_names)) |>
+  mutate(Winner = Test_MLB_Filled$Winner)
+nzv_test <- nearZeroVar(diff_matrix_test, saveMetrics = TRUE)
+
+diff_train_cleaned <- diff_matrix_train[, !nzv$nzv]
+diff_test_cleaned <- diff_matrix_test[, !nzv_test$nzv]
+
+#Models
+lda.mod <- lda(Winner ~ . - ScoreDiff, data = diff_train_cleaned)
+#lda.mod
+
+preProc <- preProcess(diff_train_cleaned, method = "pca", thresh = 0.95)
+diff_train_pca <- predict(preProc, diff_train_cleaned)
+
+preProc_test <- preProcess(diff_test_cleaned, method = "pca", thresh = 0.95)
+diff_test_pca <- predict(preProc_test, diff_test_cleaned)
+#diff_matrix_pca
+
+qda.mod <- qda(Winner ~ ., data = diff_train_pca)
+#qda.mod
+
+#Predictions
+# LDA
+yhat_lda <- predict(lda.mod, newdata = diff_test_cleaned)
+roc(predictor = yhat_lda$posterior[,1], response = diff_test_cleaned$Winner, plot = TRUE)
+cm_lda <- confusionMatrix(yhat_lda$class, diff_test_cleaned$Winner, positive = "Home")
+
+# QDA
+yhat_qda <- predict(qda.mod, newdata = diff_test_pca)
+roc(predictor = yhat_qda$posterior[,1], response = diff_test_pca$Winner, plot = TRUE)
+cm_qda <- confusionMatrix(yhat_qda$class, diff_test_pca$Winner, positive = "Home")
+
+
+cm_lda 
+cm_qda
+
+
+```
+
+
+
+
+```{r}
+# Select the most important variables
+coefficients <- lda.mod$scaling
+importance <- apply(abs(coefficients), 1, sum)
+sorted_importance <- sort(importance, decreasing = TRUE)
+top_variables <- names(sorted_importance)[1:7]
+top_variables
+
+
+# LDA and QDA with cross-validation
+control <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+lda_fit <- train(Winner ~ Fld..Diff.Field + BA.Diff.Off + OBP.Diff.Off + DefEff.Diff.Field + W.L..Diff.Pitch + SLG.Diff.Off + OPS.Diff.Off, data = diff_train_cleaned, method = "lda", trControl = control, metric = "ROC")
+
+qda_fit <- train(Winner ~ ., data = diff_train_pca, method = "qda", trControl = control, metric = "ROC")
+
+# lda_fit
+# qda_fit
+
+lda_fit_pred <- predict(lda_fit, newdata = diff_test_cleaned)
+qda_fit_pred <- predict(qda_fit, newdata = diff_test_pca)
+
+cm_lda_fit <- confusionMatrix(lda_fit_pred, diff_test_cleaned$Winner, positive = "Home")
+cm_qda_fit <- confusionMatrix(qda_fit_pred, diff_test_pca$Winner, positive = "Home")
+
+cm_lda_fit
+cm_qda_fit
+
+
+
+```
+
+
+# Random Forest for classification
+```{r}
+mod.forest.class <- randomForest(Winner ~ . - ScoreDiff, data = diff_train_cleaned, importance = TRUE)
+
+mod.forest.class
+
+
+
+yhat_forest <- predict(mod.forest.class, newdata = diff_test_cleaned)
+cm_forest <- confusionMatrix(yhat_forest, diff_test_cleaned$Winner, positive = "Home")
+
+cm_forest
+
+varImpPlot(mod.forest.class)
+variable_importance <- importance(mod.forest.class)
+```
+
+
+
+```{r}
+top_variables <- head(sort(variable_importance[, "MeanDecreaseAccuracy"], decreasing = TRUE), 7)
+names(top_variables)
+
+# Boosted Model
+diff_train_cleaned01 <- diff_train_cleaned %>% mutate(Winner = if_else(Winner == "Home",1,0))
+diff_test_cleaned01 <- diff_test_cleaned |> mutate(Winner = if_else(Winner == "Home",1,0))
+
+mod.boost.class <-gbm(Winner~ W.L..Diff.Pitch + L.Diff.Pitch + W.Diff.Pitch + IP.Diff.Pitch + SO.W.Diff.Pitch + Inn.Diff.Field + FIP.Diff.Pitch, 
+                      data=diff_train_cleaned01, 
+                      distribution = "bernoulli",
+                      n.trees=5000, 
+                      interaction.depth=5, 
+                      shrinkage= 0.2,
+                      cv.folds = 10)
+
+summary(mod.boost.class)
+best.iter <- gbm.perf(mod.boost.class, plot.it = TRUE)
+
+phat.boost.class <- predict(mod.boost.class, newdata = diff_test_cleaned01, n.trees = best.iter, type = "response")
+yhat.boost.class <- factor(if_else(phat.boost.class > 0.5,"Home","Away"),levels = c("Home","Away"))
+roc(predictor = phat.boost.class, response = diff_test_cleaned01$Winner, plot = TRUE)
+confusionMatrix(yhat.boost.class,diff_test_cleaned$Winner, positive = "Home")
+```
+
+
+
+
+
+
+#Need 2 more types of models
+
+We can use any of the class models to try and come up with 2 more models. Once we decide on variables we just need to input them into the model code and the rest should work.
+
+
+#We will need to do some assessing on all of the models
+
+Once we have decided on the variables we want and have a test set, then we can do some more of this to see how we did.
+
+
+
+
+
+```{r}
+Games1 = Test_MLB_Filled %>% dplyr::select(-c(`Home Score`, `Away Score`, ScoreDiff, TotalPoints, Winner))
+Games2 = Test_MLB_Empty %>% dplyr::select(-c(Result))
+
+
+TwinsGames = rbind(subset(Games1, Home.Team == "Minnesota Twins" | Away.Team == "Minnesota Twins"),subset(Games2, Home.Team == "Minnesota Twins" | Away.Team == "Minnesota Twins"))
+
+
+Season24 = rbind(Games1, Games2)
+```
+
+```{r}
+#Model to predict season wins
+Model = glm(Winner ~  PA.Diff.Off + avg_hr_distance.Diff + OBP.Diff.Off + fbld.Diff + DefEff.Diff.Field, data = Combined_MLB, family = binomial)
+summary(Model)
+
+TwinsGames$phat <- predict(Model, newdata = TwinsGames, type = "response")
+threshold = 0.58107
+
+TwinsGames$PredictedWinner  = ifelse(TwinsGames$phat > threshold, "Home" , "Away")
+
+predicted_twins_wins <- TwinsGames %>%
+  filter((Home.Team == "Minnesota Twins" & PredictedWinner == "Home") |
+         (Away.Team == "Minnesota Twins" & PredictedWinner == "Away")) %>%
+  summarise(TotalPredictedWins = n())
+
+print(predicted_twins_wins)
+
+```
+
+```{r}
+Season24$phat <- predict(Model, newdata = Season24, type = "response")
+
+# Set the threshold for predicting home team as winner
+threshold = 0.58107
+
+# Determine predicted winner: 'Home' if probability is greater than threshold, 'Away' otherwise
+Season24$PredictedWinner = ifelse(Season24$phat > threshold, "Home", "Away")
+
+# Create a column in Season24 to identify the actual winner
+Season24$ActualWinner = ifelse(Season24$PredictedWinner == "Home", Season24$Home.Team, Season24$Away.Team)
+
+# Calculate wins for each team
+team_wins <- Season24 %>%
+  group_by(ActualWinner) %>%
+  summarise(TotalPredictedWins = n())
+
+# Rename the "ActualWinner" column to "Team" for clarity
+team_wins <- rename(team_wins, Team = ActualWinner)
+
+# View the result
+print(team_wins)
+```
+
+
+```{r}
+Season24$randomValue <- runif(nrow(Season24))
+
+# Determine predicted winner: 'Home' if randomValue <= phat, 'Away' otherwise
+Season24$PredictedWinnerProbability <- ifelse(Season24$randomValue <= Season24$phat, "Home", "Away")
+
+
+Season24$ActualWinner = ifelse(Season24$PredictedWinnerProbability == "Home", Season24$Home.Team, Season24$Away.Team)
+
+# Calculate wins for each team
+team_wins <- Season24 %>%
+  group_by(ActualWinner) %>%
+  summarise(TotalPredictedWins = n())
+
+# Rename the "ActualWinner" column to "Team" for clarity
+team_wins <- rename(team_wins, Team = ActualWinner)
+
+
+arrange(team_wins, desc(TotalPredictedWins))
+```
