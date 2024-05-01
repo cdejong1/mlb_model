@@ -12,6 +12,7 @@ library(caret)
 library(pROC)
 library(dplyr)
 
+
 #algorithm specific libraries
 library(MASS)
 library(randomForest)
@@ -437,11 +438,15 @@ Matrix
 
 
 
-#Need 2 more types of models
-
-We can use any of the class models to try and come up with 2 more models. Once we decide on variables we just need to input them into the model code and the rest should work.
-
 # LDA and QDA Models for Classification
+
+### Data Preparation
+The Difference Matrices are created to contain only the difference variables from previous years (Combined_MLB) and the current year so far (Test_MLB_Filled), respectively. We identify the Near Zero Variance Features and remove them from both training and testing datasets to improve the model accuracy and efficiency. 
+
+Principal Component Analysis Preprocessing is applied to reduce dimensionality and mitigate collinearity before training the QDA model. PCA transforms the data into a set of linearly uncorrelated variables, which are then used in the QDA model. 
+
+Both Models attempt to predict the Winner variable based on the accumulation of difference features. 
+
 ```{r}
 #Create Differences Matrix
 diff_matrix_train <- Combined_MLB |>
@@ -459,27 +464,26 @@ diff_test_cleaned <- diff_matrix_test[, !nzv_test$nzv]
 
 #Models
 lda.mod <- lda(Winner ~ . - ScoreDiff, data = diff_train_cleaned)
-#lda.mod
 
+# Preprocessing by PCA for QDA model
 preProc <- preProcess(diff_train_cleaned, method = "pca", thresh = 0.95)
 diff_train_pca <- predict(preProc, diff_train_cleaned)
 
 preProc_test <- preProcess(diff_test_cleaned, method = "pca", thresh = 0.95)
 diff_test_pca <- predict(preProc_test, diff_test_cleaned)
-#diff_matrix_pca
+
 
 qda.mod <- qda(Winner ~ ., data = diff_train_pca)
-#qda.mod
 
 #Predictions
 # LDA
 yhat_lda <- predict(lda.mod, newdata = diff_test_cleaned)
-roc(predictor = yhat_lda$posterior[,1], response = diff_test_cleaned$Winner, plot = TRUE)
+roc_lda <- roc(predictor = yhat_lda$posterior[,1], response = diff_test_cleaned$Winner)
 cm_lda <- confusionMatrix(yhat_lda$class, diff_test_cleaned$Winner, positive = "Home")
 
 # QDA
 yhat_qda <- predict(qda.mod, newdata = diff_test_pca)
-roc(predictor = yhat_qda$posterior[,1], response = diff_test_pca$Winner, plot = TRUE)
+roc_qda <- roc(predictor = yhat_qda$posterior[,1], response = diff_test_pca$Winner)
 cm_qda <- confusionMatrix(yhat_qda$class, diff_test_pca$Winner, positive = "Home")
 
 
@@ -488,9 +492,21 @@ cm_qda
 
 
 ```
+### Model Predictions 
+The Area Under the Curve (AUC) for the LDA model is 0.6593. This indicates that the model has moderate discriminative ability to distinguish between the classes "Home" and "Away". An AUC of 0.6593 suggests the model is significantly better than random guessing (AUC = 0.5) but not exceptionally strong.
 
+The AUC for the QDA model is 0.563, which is quite low and indicates limited ability to discriminate between the winning classes. This value suggests the model performs only slightly better than random guessing.
 
+The LDA kappa value of 0.2315, is considered a fair agreement beyond chance. Where as, the QDA kappa value of 0.0927, reflects minimal agreeement beyond chance. The low value indicates that the predictive power of the QDA model is limited. 
 
+Sensitivity and Specificity is insignificant to our data as there is no real importance in predicting Home wins over Away wins. 
+
+### LDA & QDA Model Enhancement
+Due to the low predictive power of the previous models it is important to investigate possible enhancements to make the models more accurate and efficient. This is completed through the use of feature selection based on importance, use of cross-validation to prevent overfitting, and model evaluation to gage performance. 
+
+Feature selection involves selecting the most important variables based on their contributions to an initial LDA model (lda.mod). This process aims to reduce the model complexity and focus on the variables that have the most significant impact on the outcome. Reducing the number of variables not only simplifies the model but can also improve performance by eliminating noise and less relevant information. Coefficients from the LDA model's scaling are used to measure the importance of each variable. The absolute values of these coefficients are summed across each variable to get a single importance score per variable.
+
+Cross-validation is employed to ensure that the models generalize well to new data and do not just perform well on the training dataset. This method helps in assessing the model's robustness and accuracy more reliably.
 
 ```{r}
 # Select the most important variables
@@ -508,8 +524,7 @@ lda_fit <- train(Winner ~ Fld..Diff.Field + BA.Diff.Off + OBP.Diff.Off + DefEff.
 
 qda_fit <- train(Winner ~ ., data = diff_train_pca, method = "qda", trControl = control, metric = "ROC")
 
-# lda_fit
-# qda_fit
+
 
 lda_fit_pred <- predict(lda_fit, newdata = diff_test_cleaned)
 qda_fit_pred <- predict(qda_fit, newdata = diff_test_pca)
@@ -520,29 +535,57 @@ cm_qda_fit <- confusionMatrix(qda_fit_pred, diff_test_pca$Winner, positive = "Ho
 cm_lda_fit
 cm_qda_fit
 
-
+roc_lda_cv <- lda_fit$results
+roc_qda_cv <- qda_fit$results
 
 ```
 
+### Model Predictions with Enhancement
+The LDA AUC of 0.618, suggests moderate discriminative ability between the 'Away' and 'Home' classes.
+The QDA AUC of 0.860, shows excellent discrimination between the classes. This value indicates a strong model capable of effectively distinguishing between 'Home' and 'Away' wins.
+
+The LDA Accuracy (64.91%) and QDA Accuracy (54.59%) tells us that the LDA model was able to predict the right class about 65% of the time, which is quite reasonable though not excellent. Meanwhile, despite QDA’s higher ROC AUC, its overall accuracy is lower than LDA’s.
+
+The QDA model shows excellent potential in distinguishing between classes as per the ROC AUC but seems to struggle with accuracy in real-world predictions compared to LDA. The LDA model, while not as strong in discriminative ability as indicated by the lower ROC AUC, provides better overall accuracy and a more balanced classification according to the confusion matrix.
+
 
 # Random Forest for classification
+The Random Forest model implemented is a robust classification tool used to predict the Winner based on the difference metrics similar to before. A random forest model was considered as a potential fit as they are able to handle lots of variables, which our data has. 
+
+
 ```{r}
 mod.forest.class <- randomForest(Winner ~ . - ScoreDiff, data = diff_train_cleaned, importance = TRUE)
 
 mod.forest.class
 
 
-
+phat_forest <- predict(mod.forest.class, newdata = diff_test_cleaned, type = "prob")
 yhat_forest <- predict(mod.forest.class, newdata = diff_test_cleaned)
 cm_forest <- confusionMatrix(yhat_forest, diff_test_cleaned$Winner, positive = "Home")
 
+roc_forest <- roc(predictor = phat_forest[, "Home"], response = diff_test_cleaned$Winner)
 cm_forest
 
 varImpPlot(mod.forest.class)
 variable_importance <- importance(mod.forest.class)
 ```
+### Model Predictions
+The OOB Error rate (49.14%) estimates the error rate computed using out-of-bag samples. This is a method for measuring prediction error of random forests and other ensemble methods by leaving out each observation from the bootstrap samples and using it to assess the number of times the predicted class does not match the true class. An OOB error of 49.14% is relatively high, indicating a substantial misclassification rate.
 
+Class error rates of 68.21% for Away and 31.60% for Home, indicates a high error rate in predicting Away correctly, and a low error rate for Home predictions. 
 
+The Accuracy (52.52%), indicates that approximately half of the predictions match the actual class labels, which is not much better than random guessing given the No Information Rate (NIR) of 51.61%.
+
+The overall accuracy is low, and the kappa statistic indicates minimal agreement beyond chance. This suggests the model, while being quite good at predicting 'Home' winners, fails to adequately distinguish between 'Home' and 'Away' overall, likely due to class imbalance or insufficiently discriminative features.
+
+### Boosted Model
+The decision to switch from a traditional Random Forest model to a Gradient Boosting Machine (GBM) model involves several strategic considerations, primarily aimed at addressing potential weaknesses in the former and leveraging the strengths of the latter. 
+
+Unlike Random Forest, which builds trees independently and aggregates their predictions, boosting methods like GBM build trees sequentially. Each new tree attempts to correct the errors made by the previous trees. This approach can potentially lead to higher accuracy, especially on complex datasets where interactions and non-linear relationships are prevalent.
+
+The shrinkage parameter in GBM scales the contribution of each tree by a factor between 0 and 1. This is a form of regularization that helps prevent the model from overfitting, making the model robust even when including a large number of trees.
+
+Prior to the GBM model, the most important variables were selected based on their "MeanDecreaseAccuracy" from a Random Forest model. This step ensures that the GBM model focuses on the most influential predictors, which can enhance the model's efficiency and effectiveness.
 
 ```{r}
 top_variables <- head(sort(variable_importance[, "MeanDecreaseAccuracy"], decreasing = TRUE), 7)
@@ -565,24 +608,58 @@ best.iter <- gbm.perf(mod.boost.class, plot.it = TRUE)
 
 phat.boost.class <- predict(mod.boost.class, newdata = diff_test_cleaned01, n.trees = best.iter, type = "response")
 yhat.boost.class <- factor(if_else(phat.boost.class > 0.5,"Home","Away"),levels = c("Home","Away"))
-roc(predictor = phat.boost.class, response = diff_test_cleaned01$Winner, plot = TRUE)
+roc_boost <- roc(predictor = phat.boost.class, response = diff_test_cleaned01$Winner)
 confusionMatrix(yhat.boost.class,diff_test_cleaned$Winner, positive = "Home")
 ```
+### Model Predictions
+An AUC of 0.681 suggests a moderate discrimination ability, where the model correctly distinguishes between positive (Home win) and negative (Away win) classes 68.1% of the time.
+
+The accuracy of approximately 64% is above the No Information Rate (NIR), which is the accuracy that would be achieved by always predicting the most frequent class (Home in this case). This shows that the model provides value beyond simple guessing.
+
+It is generally considered that a Kappa value between 0.21-0.40 represents fair agreement beyond chance. This suggests that the model is doing better than random chance, but again, there's room for improvement in predictive performance.
 
 
+# Model Comparisons
+Compare the Models' Predictive Capabilities in predicting Home or Away wins. 
 
+```{r}
+# Create dataframe 
+roc_df_lda <- data.frame(
+  TPR = roc_lda$sensitivities,
+  FPR = roc_lda$specificities,
+  Model = "LDA"
+)
 
+roc_df_qda <- data.frame(
+  TPR = roc_qda$sensitivities,
+  FPR = roc_qda$specificities,
+  Model = "QDA"
+)
 
+roc_df_forest <- data.frame(
+  TPR = roc_forest$sensitivities,
+  FPR = roc_forest$specificities,
+  Model = "Random Forest"
+)
 
-#Need 2 more types of models
+roc_df_boost <- data.frame(
+  TPR = roc_boost$sensitivities,
+  FPR = roc_boost$specificities,
+  Model = "Boosted"
+)
 
-We can use any of the class models to try and come up with 2 more models. Once we decide on variables we just need to input them into the model code and the rest should work.
+roc_df <- rbind(roc_df_lda, roc_df_qda, roc_df_forest, roc_df_boost)
+```
 
-
-#We will need to do some assessing on all of the models
-
-Once we have decided on the variables we want and have a test set, then we can do some more of this to see how we did.
-
+Plotting the ROC curves against each other. 
+```{r}
+ggplot(roc_df, aes(x = 1 - FPR, y = TPR, color = Model)) +
+  geom_line() +
+  geom_abline() +
+  labs(x = "False Positive Rate",
+       y = "True Positive Rate",
+       title = "ROC Curve Comparison")
+```
 
 
 
